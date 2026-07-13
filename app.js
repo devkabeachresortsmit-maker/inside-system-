@@ -409,10 +409,7 @@ document.querySelectorAll(".nav-item").forEach(btn => {
 function visibleTasks() {
   if (!currentUser) return [];
   if (currentUser.role === "admin") return tasks;
-  return tasks.filter(t =>
-    t.department === currentUser.department ||
-    t.assignedDepartment === currentUser.department
-  );
+  return tasks.filter(t => t.assignedDepartment === currentUser.department);
 }
 
 /* ---------------- NOTIFICATION BELL DROPDOWN ---------------- */
@@ -736,7 +733,9 @@ function renderDepartments() {
   const deptGrid = document.getElementById("deptGrid");
   if (!deptGrid) return;
   
-  deptGrid.innerHTML = DEPARTMENTS.map(d => {
+  const deptsToShow = (currentUser && currentUser.role === "admin") ? DEPARTMENTS : (currentUser ? [currentUser.department] : []);
+
+  deptGrid.innerHTML = deptsToShow.map(d => {
     const deptTasks = tasks.filter(t => t.assignedDepartment === d);
     const count = deptTasks.length;
     const completed = deptTasks.filter(t => t.status === "Completed").length;
@@ -969,78 +968,7 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 3500);
 }
 
-/* ---------------- OPERATIONS SIMULATOR CONTROLLER ---------------- */
 
-const simGuestIssueBtn = document.getElementById("simGuestIssueBtn");
-const simProgressTaskBtn = document.getElementById("simProgressTaskBtn");
-
-const SIMULATED_ISSUES = [
-  { title: "Plumbing leakage in bathroom", dept: "Engineering", priority: "Critical", room: "304" },
-  { title: "VIP guest requested extra pillows & towels", dept: "Housekeeping", priority: "High", room: "212" },
-  { title: "Lobby WiFi router signal degradation", dept: "IT", priority: "High", room: "Lobby" },
-  { title: "Late dinner room service delay", dept: "F&B", priority: "Critical", room: "405" },
-  { title: "AC fan making grinding noise", dept: "Engineering", priority: "Medium", room: "109" },
-  { title: "Luggage assistance required at checkout", dept: "Front Office", priority: "Low", room: "318" },
-  { title: "Pool deck cleaning requested", dept: "Housekeeping", priority: "Medium", room: "Poolside" },
-  { title: "Security alarm alert on gate 2", dept: "Security", priority: "Critical", room: "Gate 2" }
-];
-
-if (simGuestIssueBtn) {
-  simGuestIssueBtn.addEventListener("click", () => {
-    const issue = SIMULATED_ISSUES[Math.floor(Math.random() * SIMULATED_ISSUES.length)];
-    const randomIdNumber = Math.floor(10000 + Math.random() * 90000);
-    const taskId = `DBR-2026-${randomIdNumber}`;
-    const createdTime = new Date();
-    
-    const newTaskData = {
-      taskId: taskId,
-      title: `[Simulated] ${issue.title}`,
-      description: `Automated simulator event generated. Guest impact is critical. Please proceed with standard operations response.`,
-      department: "Management",
-      assignedDepartment: issue.dept,
-      priority: issue.priority,
-      status: "Pending",
-      dueDate: firebase.firestore.Timestamp.fromDate(new Date(Date.now() + 2 * 3600 * 1000)), // 2 hours
-      roomNumber: issue.room,
-      guestRelated: true,
-      createdAt: firebase.firestore.Timestamp.fromDate(createdTime),
-      comments: [
-        { author: "Resort Simulator", text: "Guest-related issue created automatically via dispatcher simulator.", time: firebase.firestore.Timestamp.fromDate(createdTime) }
-      ],
-      logs: [
-        { text: "Simulator generated guest ticket.", time: firebase.firestore.Timestamp.fromDate(createdTime) }
-      ]
-    };
-    
-    db.collection("tasks").add(newTaskData)
-      .then(() => {
-        showToast(`Simulator generated guest request ${taskId}!`);
-        playNotificationSound();
-      })
-      .catch(err => {
-        console.error("Simulator failed to create task:", err);
-      });
-  });
-}
-
-if (simProgressTaskBtn) {
-  simProgressTaskBtn.addEventListener("click", () => {
-    const activeTasks = tasks.filter(t => t.status !== "Completed" && t.status !== "Rejected");
-    if (activeTasks.length === 0) {
-      showToast("No active tasks to progress!");
-      return;
-    }
-    
-    const t = activeTasks[Math.floor(Math.random() * activeTasks.length)];
-    const next = getNextStatus(t.status);
-    
-    if (next) {
-      changeTaskStatus(t.id, next);
-    } else {
-      changeTaskStatus(t.id, "Completed");
-    }
-  });
-}
 
 function playNotificationSound() {
   try {
