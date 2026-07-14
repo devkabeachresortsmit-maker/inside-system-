@@ -1,7 +1,8 @@
 /* =========================================================
    DEVKA OPS HUB — Advanced Ops Logic
    Includes interactive Kanban, activity feeds, task detail drawers,
-   notification logs, and operations simulation.
+   notification logs, operations simulation, mobile navigation,
+   and real-time system notifications (HTML5 + FCM).
    ========================================================= */
 
 const DEPARTMENTS = [
@@ -14,6 +15,7 @@ let currentUser = null;
 let activeTaskId = null;
 let currentViewMode = "list"; // "list" | "kanban"
 let tasks = [];
+let initialLoadComplete = false;
 
 // Activity feed log seed data
 let activityLogs = [
@@ -47,10 +49,31 @@ function populateDeptSelects() {
   });
 }
 
-document.getElementById("loginForm").addEventListener("submit", e => {
-  e.preventDefault();
-  login();
-});
+// Global scope listener for password visibility toggle
+const togglePasswordBtn = document.getElementById("togglePasswordBtn");
+if (togglePasswordBtn) {
+  togglePasswordBtn.addEventListener("click", () => {
+    const passwordInput = document.getElementById("loginPassword");
+    const icon = togglePasswordBtn.querySelector("i");
+    if (passwordInput && passwordInput.type === "password") {
+      passwordInput.type = "text";
+      if (icon) icon.setAttribute("data-lucide", "eye-off");
+    } else if (passwordInput) {
+      passwordInput.type = "password";
+      if (icon) icon.setAttribute("data-lucide", "eye");
+    }
+    if (window.lucide) window.lucide.createIcons();
+  });
+}
+
+// Global scope listener for login form submit
+const loginForm = document.getElementById("loginForm");
+if (loginForm) {
+  loginForm.addEventListener("submit", e => {
+    e.preventDefault();
+    login();
+  });
+}
 
 function login() {
   const usernameInput = document.getElementById("loginUsername").value.trim().toLowerCase();
@@ -64,7 +87,11 @@ function login() {
   showToast("Signing in...");
   const email = `${usernameInput}@dbr-inside-system.local`;
 
-  auth.signInWithEmailAndPassword(email, passwordInput)
+  // Set persistence to SESSION (only valid for current tab)
+  auth.setPersistence(firebase.auth.Auth.Persistence.SESSION)
+    .then(() => {
+      return auth.signInWithEmailAndPassword(email, passwordInput);
+    })
     .then(userCredential => {
       const uid = userCredential.user.uid;
       return db.collection("users").doc(uid).get();
@@ -97,25 +124,7 @@ function login() {
         name: userData.username.replace(/[.]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
       };
 
-      document.getElementById("loginScreen").classList.add("hidden");
-      document.getElementById("appShell").classList.remove("hidden");
-
-      document.getElementById("userName").textContent = currentUser.name;
-      document.getElementById("userRole").textContent =
-        (currentUser.role === "admin" ? "Super Admin" : currentUser.role === "head" ? `${currentUser.department} Head` : `${currentUser.department} Staff`);
-      document.getElementById("userInitial").textContent = currentUser.name.charAt(0).toUpperCase();
-
-      if (currentUser.role === "admin") {
-        document.querySelectorAll(".admin-only").forEach(el => el.classList.remove("hidden"));
-      } else {
-        document.querySelectorAll(".admin-only").forEach(el => el.classList.add("hidden"));
-      }
-
-      logActivity(`System user ${currentUser.name} signed in.`);
-      addNotification(`Signed in as ${currentUser.name} (${currentUser.role})`);
-      
-      startFirestoreListeners();
-      checkOperationalHealth();
+      // App Shell is mounted dynamically via auth state change.
       showToast(`Welcome back, ${currentUser.name}!`);
     })
     .catch(error => {
@@ -130,20 +139,6 @@ function login() {
     });
 }
 
-document.getElementById("logoutBtn").addEventListener("click", () => {
-  if (currentUser) {
-    logActivity(`User ${currentUser.name} logged out.`);
-    auth.signOut()
-      .then(() => {
-        showToast("Signed out successfully.");
-      })
-      .catch(err => {
-        console.error("Sign out error:", err);
-        showToast("Failed to sign out.");
-      });
-  }
-});
-
 /* ---------------- FIRESTORE LISTENERS ---------------- */
 
 let tasksListener = null;
@@ -152,6 +147,8 @@ let usersListener = null;
 function startFirestoreListeners() {
   if (tasksListener) tasksListener();
   if (usersListener) usersListener();
+
+  initialLoadComplete = false;
 
   tasksListener = db.collection("tasks").onSnapshot(snapshot => {
     const allTasks = [];
@@ -183,7 +180,37 @@ function startFirestoreListeners() {
       allTasks.push(task);
     });
     
+    // Detect new task dispatches or critical status modifications in real time
+    if (initialLoadComplete) {
+      snapshot.docChanges().forEach(change => {
+        const data = change.doc.data();
+        if (change.type === "added") {
+          // Notify if user is admin, or task is assigned to user's department
+          if (currentUser && (currentUser.role === "admin" || data.assignedDepartment === currentUser.department)) {
+            triggerSystemNotification(`New Task Dispatched: ${data.title}`, {
+              body: `Department: ${data.assignedDepartment} | Priority: ${data.priority}`,
+              icon: 'logo.svg'
+            });
+            playNotificationSound();
+            showToast(`New task: "${data.title}" assigned to ${data.assignedDepartment}`);
+            logActivity(`New task ${data.taskId} assigned to ${data.assignedDepartment}.`);
+            addNotification(`Task ${data.taskId} assigned to ${data.assignedDepartment}`);
+          }
+        } else if (change.type === "modified") {
+          if (currentUser && (currentUser.role === "admin" || data.assignedDepartment === currentUser.department)) {
+            triggerSystemNotification(`Task Updated: ${data.taskId}`, {
+              body: `Title: ${data.title}\nStatus is now: ${data.status}`,
+              icon: 'logo.svg'
+            });
+            playNotificationSound();
+            showToast(`Task ${data.taskId} updated to ${data.status}`);
+          }
+        }
+      });
+    }
+
     tasks = allTasks.sort((a, b) => b.createdAt - a.createdAt);
+    initialLoadComplete = true;
     
     checkOperationalHealth();
     renderAll();
@@ -225,22 +252,49 @@ auth.onAuthStateChanged(user => {
             name: userData.username.replace(/[.]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
           };
 
+          // Secure DOM instantiation: clone appShellTemplate into appContainer
+          const appContainer = document.getElementById("appContainer");
+          const template = document.getElementById("appShellTemplate");
+          appContainer.innerHTML = "";
+          appContainer.appendChild(template.content.cloneNode(true));
+
+          // Hide login screen and display app shell
           document.getElementById("loginScreen").classList.add("hidden");
-          document.getElementById("appShell").classList.remove("hidden");
+          const appShell = document.getElementById("appShell");
+          if (appShell) appShell.classList.remove("hidden");
 
-          document.getElementById("userName").textContent = currentUser.name;
-          document.getElementById("userRole").textContent =
-            (currentUser.role === "admin" ? "Super Admin" : currentUser.role === "head" ? `${currentUser.department} Head` : `${currentUser.department} Staff`);
-          document.getElementById("userInitial").textContent = currentUser.name.charAt(0).toUpperCase();
+          // Update user details in sidebar
+          const userNameEl = document.getElementById("userName");
+          const userRoleEl = document.getElementById("userRole");
+          const userInitialEl = document.getElementById("userInitial");
+          if (userNameEl) userNameEl.textContent = currentUser.name;
+          if (userRoleEl) {
+            userRoleEl.textContent =
+              (currentUser.role === "admin" ? "Super Admin" : currentUser.role === "head" ? `${currentUser.department} Head` : `${currentUser.department} Staff`);
+          }
+          if (userInitialEl) userInitialEl.textContent = currentUser.name.charAt(0).toUpperCase();
 
+          // Apply access control visual rules
           if (currentUser.role === "admin") {
             document.querySelectorAll(".admin-only").forEach(el => el.classList.remove("hidden"));
           } else {
             document.querySelectorAll(".admin-only").forEach(el => el.classList.add("hidden"));
           }
 
+          // Register event bindings for cloned DOM
+          initializeDashboardDOM();
+
+          // Start Firestore listeners
           startFirestoreListeners();
           checkOperationalHealth();
+          
+          // Request Browser Notification permissions
+          if ("Notification" in window && Notification.permission === "default") {
+            Notification.requestPermission();
+          }
+
+          // Setup Firebase FCM (Notifications)
+          setupFCM(user.uid);
         } else {
           const username = user.email.split("@")[0];
           if (username === "admin") {
@@ -266,7 +320,8 @@ auth.onAuthStateChanged(user => {
       });
   } else {
     currentUser = null;
-    document.getElementById("appShell").classList.add("hidden");
+    // Safely purge app content from DOM on logout to make it inspect-proof
+    document.getElementById("appContainer").innerHTML = "";
     document.getElementById("loginScreen").classList.remove("hidden");
     
     if (tasksListener) { tasksListener(); tasksListener = null; }
@@ -274,9 +329,173 @@ auth.onAuthStateChanged(user => {
   }
 });
 
-/* ---------------- ADMIN REGISTRATION ---------------- */
+/* ---------------- DASHBOARD DOM EVENT BINDING ---------------- */
 
-document.getElementById("registerUserForm").addEventListener("submit", e => {
+function initializeDashboardDOM() {
+  // Navigation switcher
+  document.querySelectorAll(".nav-item").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const view = btn.dataset.view;
+      if (!view) return;
+
+      // Sync active state across desktop sidebar and mobile bottom nav items
+      document.querySelectorAll(".nav-item").forEach(b => {
+        if (b.dataset.view === view) {
+          b.classList.add("active");
+        } else {
+          b.classList.remove("active");
+        }
+      });
+
+      document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
+      const targetView = document.getElementById("view-" + view);
+      if (targetView) targetView.classList.remove("hidden");
+      renderAll();
+    });
+  });
+
+  // Logout Click
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", () => {
+      if (currentUser) {
+        logActivity(`User ${currentUser.name} logged out.`);
+        auth.signOut()
+          .then(() => {
+            showToast("Signed out successfully.");
+          })
+          .catch(err => {
+            console.error("Sign out error:", err);
+            showToast("Failed to sign out.");
+          });
+      }
+    });
+  }
+
+  // User Registration form
+  const registerUserForm = document.getElementById("registerUserForm");
+  if (registerUserForm) {
+    registerUserForm.addEventListener("submit", handleUserRegistrationSubmit);
+  }
+
+  // Bell Dropdown Notification button
+  const notifBellBtn = document.getElementById("notifBellBtn");
+  const notifDropdown = document.getElementById("notifDropdown");
+  if (notifBellBtn) {
+    notifBellBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      if (notifDropdown) notifDropdown.classList.toggle("hidden");
+    });
+  }
+
+  document.addEventListener("click", e => {
+    if (notifDropdown && !notifDropdown.classList.contains("hidden") && !notifDropdown.contains(e.target)) {
+      notifDropdown.classList.add("hidden");
+    }
+  });
+
+  // Toggle buttons between List and Kanban
+  const btnListView = document.getElementById("btnListView");
+  const btnKanbanView = document.getElementById("btnKanbanView");
+  const listViewContainer = document.getElementById("listViewContainer");
+  const kanbanViewContainer = document.getElementById("kanbanViewContainer");
+
+  if (btnListView) {
+    btnListView.addEventListener("click", () => {
+      btnListView.classList.add("active");
+      if (btnKanbanView) btnKanbanView.classList.remove("active");
+      if (listViewContainer) listViewContainer.classList.remove("hidden");
+      if (kanbanViewContainer) kanbanViewContainer.classList.add("hidden");
+      currentViewMode = "list";
+      renderFullTable();
+    });
+  }
+
+  if (btnKanbanView) {
+    btnKanbanView.addEventListener("click", () => {
+      btnKanbanView.classList.add("active");
+      if (btnListView) btnListView.classList.remove("active");
+      if (kanbanViewContainer) kanbanViewContainer.classList.remove("hidden");
+      if (listViewContainer) listViewContainer.classList.add("hidden");
+      currentViewMode = "kanban";
+      renderKanbanBoard();
+    });
+  }
+
+  // Comment submit
+  const addCommentBtn = document.getElementById("addCommentBtn");
+  if (addCommentBtn) {
+    addCommentBtn.addEventListener("click", handleCommentSubmit);
+  }
+
+  // Drawer buttons
+  const closeDrawerBtn = document.getElementById("closeDrawerBtn");
+  const drawerBackdrop = document.getElementById("drawerBackdrop");
+  if (closeDrawerBtn) closeDrawerBtn.addEventListener("click", closeTaskDetails);
+  if (drawerBackdrop) drawerBackdrop.addEventListener("click", closeTaskDetails);
+
+  // New task buttons (supports both desktop sidebar and mobile nav buttons)
+  const newTaskBtn = document.getElementById("newTaskBtn");
+  const mobileNewTaskBtn = document.getElementById("mobileNewTaskBtn");
+  const showModal = () => {
+    const taskModal = document.getElementById("taskModal");
+    if (taskModal) taskModal.classList.remove("hidden");
+    
+    const defaultDue = new Date(Date.now() + 2 * 3600 * 1000);
+    const tzoffset = defaultDue.getTimezoneOffset() * 60000;
+    const localISOTime = (new Date(defaultDue - tzoffset)).toISOString().slice(0, 16);
+    const taskDueInput = document.getElementById("taskDue");
+    if (taskDueInput) taskDueInput.value = localISOTime;
+  };
+
+  if (newTaskBtn) newTaskBtn.addEventListener("click", showModal);
+  if (mobileNewTaskBtn) mobileNewTaskBtn.addEventListener("click", showModal);
+
+  const closeModalBtn = document.getElementById("closeModal");
+  if (closeModalBtn) closeModalBtn.addEventListener("click", closeModal);
+
+  const taskModal = document.getElementById("taskModal");
+  if (taskModal) {
+    taskModal.addEventListener("click", e => {
+      if (e.target.id === "taskModal") closeModal();
+    });
+  }
+
+  const taskForm = document.getElementById("taskForm");
+  if (taskForm) {
+    taskForm.addEventListener("submit", e => {
+      e.preventDefault();
+      createTask();
+    });
+  }
+
+  // Filter bindings
+  ["filterDept", "filterStatus", "filterPriority"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener("change", () => {
+        if (currentViewMode === "list") {
+          renderFullTable();
+        } else {
+          renderKanbanBoard();
+        }
+      });
+    }
+  });
+
+  // Populate department list in task creation modals and filter select fields
+  populateDeptSelects();
+  
+  // Render current states
+  setTimeout(() => {
+    renderActivityStream();
+    renderNotifications();
+  }, 100);
+}
+
+/* ---------------- ADMIN REGISTRATION SUBMIT ---------------- */
+
+function handleUserRegistrationSubmit(e) {
   e.preventDefault();
   const regUsername = document.getElementById("regUsername").value.trim().toLowerCase();
   const regPassword = document.getElementById("regPassword").value;
@@ -334,7 +553,7 @@ document.getElementById("registerUserForm").addEventListener("submit", e => {
       console.error("Registration failed:", err);
       showToast(err.message || "Registration failed.");
     });
-});
+}
 
 function renderUsersTable(usersList) {
   const tbody = document.querySelector("#usersTable tbody");
@@ -369,11 +588,12 @@ function ensureAdminExists() {
     .then(cred => {
       console.log("Auth user created. Writing Firestore doc using secondary db instance...");
       const secondaryDb = secondaryApp.firestore();
-      return secondaryDb.collection("users").doc(adminUsername).set({
+      return secondaryDb.collection("users").doc(cred.user.uid).set({
         username: adminUsername,
         email: adminEmail,
         role: "admin",
         department: "Management",
+        uid: cred.user.uid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
     })
@@ -393,18 +613,6 @@ function ensureAdminExists() {
     });
 }
 
-/* ---------------- VIEW NAV SWITCHER ---------------- */
-
-document.querySelectorAll(".nav-item").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
-    document.getElementById("view-" + btn.dataset.view).classList.remove("hidden");
-    renderAll();
-  });
-});
-
 /* ---------------- ACCESS CONTROL FILTER ---------------- */
 function visibleTasks() {
   if (!currentUser) return [];
@@ -412,27 +620,71 @@ function visibleTasks() {
   return tasks.filter(t => t.assignedDepartment === currentUser.department);
 }
 
-/* ---------------- NOTIFICATION BELL DROPDOWN ---------------- */
-const notifBellBtn = document.getElementById("notifBellBtn");
-const notifDropdown = document.getElementById("notifDropdown");
+/* ---------------- NOTIFICATION SYSTEM (HTML5 + FCM) ---------------- */
 
-if (notifBellBtn) {
-  notifBellBtn.addEventListener("click", e => {
-    e.stopPropagation();
-    notifDropdown.classList.toggle("hidden");
-  });
+function triggerSystemNotification(title, options) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    try {
+      new Notification(title, options);
+    } catch (e) {
+      console.error("Failed to trigger Notification object", e);
+    }
+  }
 }
 
-document.addEventListener("click", e => {
-  if (notifDropdown && !notifDropdown.classList.contains("hidden") && !notifDropdown.contains(e.target)) {
-    notifDropdown.classList.add("hidden");
-  }
-});
+let fcmTokenRequestTimeout;
+function setupFCM(uid) {
+  if (!('serviceWorker' in navigator)) return;
+  
+  navigator.serviceWorker.ready.then((registration) => {
+    try {
+      const messaging = firebase.messaging();
+      messaging.useServiceWorker(registration);
+      
+      // Handle foreground messaging
+      messaging.onMessage((payload) => {
+        console.log("FCM Message received in foreground:", payload);
+        const title = payload.notification ? payload.notification.title : "Ops Hub Alert";
+        const body = payload.notification ? payload.notification.body : "FCM payload update received.";
+        
+        triggerSystemNotification(title, { body, icon: 'logo.svg' });
+        playNotificationSound();
+        showToast(body);
+        addNotification(body);
+      });
+
+      // Fetch FCM Token
+      fcmTokenRequestTimeout = setTimeout(() => {
+        messaging.getToken({ vapidKey: 'BMc22p1wR-gU0l8x8L8l_D7K8l9gVw1p2m3n4o5p6q7r8s9t0u1v2w3x4y5z' }) // default public key placeholder
+          .then((currentToken) => {
+            if (currentToken) {
+              console.log("FCM registration token fetched:", currentToken);
+              // Save token to firestore users array
+              db.collection("users").doc(uid).update({
+                fcmTokens: firebase.firestore.FieldValue.arrayUnion(currentToken)
+              }).catch(err => {
+                console.log("Could not update user document with fcmTokens.", err);
+              });
+            } else {
+              console.log("No registration token available. Request permission to generate one.");
+            }
+          })
+          .catch((err) => {
+            console.warn("FCM getToken failed (this is expected if VAPID keys are unconfigured):", err);
+          });
+      }, 2000);
+    } catch (e) {
+      console.log("FCM registration deferred or unsupported in this environment:", e);
+    }
+  });
+}
 
 function addNotification(text) {
   notifications.unshift({ text, time: new Date() });
   if (notifications.length > 10) notifications.pop();
   
+  const notifBellBtn = document.getElementById("notifBellBtn");
   if (notifBellBtn) {
     const bellIcon = notifBellBtn.querySelector("i");
     if (bellIcon) {
@@ -568,33 +820,6 @@ function renderRecentTable() {
 
 /* ---------------- TASKS LIST & KANBAN CONTROLS ---------------- */
 
-const btnListView = document.getElementById("btnListView");
-const btnKanbanView = document.getElementById("btnKanbanView");
-const listViewContainer = document.getElementById("listViewContainer");
-const kanbanViewContainer = document.getElementById("kanbanViewContainer");
-
-if (btnListView) {
-  btnListView.addEventListener("click", () => {
-    btnListView.classList.add("active");
-    btnKanbanView.classList.remove("active");
-    listViewContainer.classList.remove("hidden");
-    kanbanViewContainer.classList.add("hidden");
-    currentViewMode = "list";
-    renderFullTable();
-  });
-}
-
-if (btnKanbanView) {
-  btnKanbanView.addEventListener("click", () => {
-    btnKanbanView.classList.add("active");
-    btnListView.classList.remove("active");
-    kanbanViewContainer.classList.remove("hidden");
-    listViewContainer.classList.add("hidden");
-    currentViewMode = "kanban";
-    renderKanbanBoard();
-  });
-}
-
 function renderFullTable() {
   const dept = document.getElementById("filterDept").value;
   const status = document.getElementById("filterStatus").value;
@@ -607,8 +832,12 @@ function renderFullTable() {
   list = list.slice().sort((a, b) => b.createdAt - a.createdAt);
 
   const tbody = document.querySelector("#fullTaskTable tbody");
+  const listViewContainer = document.getElementById("listViewContainer");
   if (!tbody) return;
 
+  // On Mobile, list tables look ugly. Instead we render responsive task card blocks.
+  // We populate BOTH standard table view and mobile card view.
+  // Standard Table Rows:
   tbody.innerHTML = list.map(t => `
     <tr class="task-row" data-id="${t.id}">
       <td><span style="font-weight:600; color:var(--gold);">${t.taskId}</span></td>
@@ -622,6 +851,34 @@ function renderFullTable() {
     </tr>
   `).join("") || emptyRow(8);
 
+  // Generate mobile cards container dynamically inside the panel
+  let mobileCardList = listViewContainer.querySelector(".mobile-task-card-list");
+  if (!mobileCardList) {
+    mobileCardList = document.createElement("div");
+    mobileCardList.className = "mobile-task-card-list";
+    listViewContainer.appendChild(mobileCardList);
+  }
+  
+  mobileCardList.innerHTML = list.map(t => `
+    <div class="task-mobile-card glass-panel ${t.priority === 'Critical' && t.guestRelated ? 'guest-critical' : ''}" data-id="${t.id}">
+      <div class="card-header-row">
+        <span class="card-task-id">${t.taskId}</span>
+        <span class="card-task-priority">${priorityBadge(t.priority)}</span>
+      </div>
+      <div class="card-body-row">
+        <h4 class="card-task-title">${t.title}${t.guestRelated ? " 🛎️" : ""}</h4>
+        <p class="card-task-dept"><strong>Assigned:</strong> ${t.assignedDepartment} (from ${t.department})</p>
+      </div>
+      <div class="card-footer-row">
+        <div class="card-status-select" onclick="event.stopPropagation()">
+          ${statusSelect(t)}
+        </div>
+        <span class="card-due-date">${formatDueShort(t.dueDate)}</span>
+      </div>
+    </div>
+  `).join("") || `<div style="text-align:center; padding: 30px; font-size: 13px; color: var(--text-muted);">No operational tasks.</div>`;
+
+  // Attach event clicks
   document.querySelectorAll(".status-change").forEach(sel => {
     sel.addEventListener("change", e => {
       const id = e.target.dataset.id;
@@ -629,7 +886,7 @@ function renderFullTable() {
     });
   });
 
-  document.querySelectorAll("#fullTaskTable tbody tr.task-row").forEach(tr => {
+  document.querySelectorAll("#fullTaskTable tbody tr.task-row, .task-mobile-card").forEach(tr => {
     tr.addEventListener("click", () => openTaskDetails(tr.dataset.id));
   });
 }
@@ -695,7 +952,7 @@ function getPrevStatus(curr) {
 
 function statusSelect(t) {
   const options = ["Pending", "Accepted", "In Progress", "On Hold", "Completed", "Rejected"]
-    .map(s => `<option ${s === t.status ? "selected" : ""}>${s}</option>`).join("");
+    .map(s => `<option ${s === t.status ? "selected" : ""} value="${s}">${s}</option>`).join("");
   return `<select class="status-change" data-id="${t.id}" style="min-width:110px; padding:4px 8px; font-size:12px; margin:0;">${options}</select>`;
 }
 
@@ -761,16 +1018,82 @@ function renderDepartments() {
   }).join("");
 }
 
+/* ---------------- TASK ACTIONS: COMMENT SUBMIT & STATUS UPDATE ---------------- */
+
+function handleCommentSubmit() {
+  const commentTextInput = document.getElementById("commentText");
+  const txt = commentTextInput.value.trim();
+  if (!txt || activeTaskId === null) return;
+  
+  const t = tasks.find(x => x.id === activeTaskId);
+  if (!t) return;
+  
+  const updatedComments = [
+    {
+      author: currentUser.name + " (" + currentUser.department + ")",
+      text: txt,
+      time: firebase.firestore.Timestamp.fromDate(new Date())
+    },
+    ...t.comments.map(c => ({ author: c.author, text: c.text, time: firebase.firestore.Timestamp.fromDate(c.time) }))
+  ];
+
+  const updatedLogs = [
+    {
+      text: `Staff note added by ${currentUser.name}: "${txt.substring(0, 30)}${txt.length > 30 ? '...' : ''}"`,
+      time: firebase.firestore.Timestamp.fromDate(new Date())
+    },
+    ...t.logs.map(l => ({ text: l.text, time: firebase.firestore.Timestamp.fromDate(l.time) }))
+  ];
+
+  showToast("Saving note...");
+
+  db.collection("tasks").doc(activeTaskId).update({
+    comments: updatedComments,
+    logs: updatedLogs
+  })
+  .then(() => {
+    logActivity(`Comment added to ${t.taskId} by ${currentUser.name}.`);
+    commentTextInput.value = "";
+  })
+  .catch(err => {
+    console.error("Failed to add comment:", err);
+    showToast("Failed to save note.");
+  });
+}
+
+function changeTaskStatus(id, newStatus) {
+  const t = tasks.find(x => x.id === id);
+  if (!t) return;
+
+  const originalStatus = t.status;
+  if (originalStatus === newStatus) return;
+
+  showToast(`Updating status to ${newStatus}...`);
+
+  const updatedLogs = [
+    {
+      text: `Status updated from "${originalStatus}" to "${newStatus}" by ${currentUser.name}.`,
+      time: firebase.firestore.Timestamp.fromDate(new Date())
+    },
+    ...t.logs.map(l => ({ text: l.text, time: firebase.firestore.Timestamp.fromDate(l.time) }))
+  ];
+
+  db.collection("tasks").doc(id).update({
+    status: newStatus,
+    logs: updatedLogs
+  })
+  .then(() => {
+    logActivity(`${t.taskId} status changed to ${newStatus} by ${currentUser.name}.`);
+    addNotification(`${t.taskId} moved to ${newStatus}`);
+    showToast(`Task ${t.taskId} status updated.`);
+  })
+  .catch(err => {
+    console.error("Failed to update status:", err);
+    showToast("Database update failed.");
+  });
+}
+
 /* ---------------- TASK DETAILS DRAWER ---------------- */
-
-const drawerBackdrop = document.getElementById("drawerBackdrop");
-const taskDetailDrawer = document.getElementById("taskDetailDrawer");
-const closeDrawerBtn = document.getElementById("closeDrawerBtn");
-const addCommentBtn = document.getElementById("addCommentBtn");
-const commentText = document.getElementById("commentText");
-
-if (closeDrawerBtn) closeDrawerBtn.addEventListener("click", closeTaskDetails);
-if (drawerBackdrop) drawerBackdrop.addEventListener("click", closeTaskDetails);
 
 function openTaskDetails(id) {
   const t = tasks.find(x => x.id === id);
@@ -779,11 +1102,15 @@ function openTaskDetails(id) {
   activeTaskId = id;
   populateDrawer(t);
   
+  const drawerBackdrop = document.getElementById("drawerBackdrop");
+  const taskDetailDrawer = document.getElementById("taskDetailDrawer");
   if (drawerBackdrop) drawerBackdrop.classList.remove("hidden");
   if (taskDetailDrawer) taskDetailDrawer.classList.add("open");
 }
 
 function closeTaskDetails() {
+  const taskDetailDrawer = document.getElementById("taskDetailDrawer");
+  const drawerBackdrop = document.getElementById("drawerBackdrop");
   if (taskDetailDrawer) taskDetailDrawer.classList.remove("open");
   setTimeout(() => {
     if (drawerBackdrop) drawerBackdrop.classList.add("hidden");
@@ -826,81 +1153,14 @@ function populateDrawer(t) {
   `).join("") || `<div style="font-size:12px; color:var(--text-muted);">No staff logs recorded.</div>`;
 }
 
-if (addCommentBtn) {
-  addCommentBtn.addEventListener("click", () => {
-    const txt = commentText.value.trim();
-    if (!txt || activeTaskId === null) return;
-    
-    const t = tasks.find(x => x.id === activeTaskId);
-    if (!t) return;
-    
-    const updatedComments = [
-      {
-        author: currentUser.name + " (" + currentUser.department + ")",
-        text: txt,
-        time: firebase.firestore.Timestamp.fromDate(new Date())
-      },
-      ...t.comments.map(c => ({ author: c.author, text: c.text, time: firebase.firestore.Timestamp.fromDate(c.time) }))
-    ];
-
-    const updatedLogs = [
-      {
-        text: `Staff note added by ${currentUser.name}: "${txt.substring(0, 30)}${txt.length > 30 ? '...' : ''}"`,
-        time: firebase.firestore.Timestamp.fromDate(new Date())
-      },
-      ...t.logs.map(l => ({ text: l.text, time: firebase.firestore.Timestamp.fromDate(l.time) }))
-    ];
-
-    showToast("Saving note...");
-
-    db.collection("tasks").doc(activeTaskId).update({
-      comments: updatedComments,
-      logs: updatedLogs
-    })
-    .then(() => {
-      logActivity(`Comment added to ${t.taskId} by ${currentUser.name}.`);
-      commentText.value = "";
-    })
-    .catch(err => {
-      console.error("Failed to add comment:", err);
-      showToast("Failed to save note.");
-    });
-  });
-}
-
 /* ---------------- CREATE TASK MODAL ---------------- */
 
-const newTaskBtn = document.getElementById("newTaskBtn");
-if (newTaskBtn) {
-  newTaskBtn.addEventListener("click", () => {
-    document.getElementById("taskModal").classList.remove("hidden");
-    
-    const defaultDue = new Date(Date.now() + 2 * 3600 * 1000);
-    const tzoffset = defaultDue.getTimezoneOffset() * 60000;
-    const localISOTime = (new Date(defaultDue - tzoffset)).toISOString().slice(0, 16);
-    document.getElementById("taskDue").value = localISOTime;
-  });
-}
-
-const closeModalBtn = document.getElementById("closeModal");
-if (closeModalBtn) closeModalBtn.addEventListener("click", closeModal);
-
-const taskModal = document.getElementById("taskModal");
-if (taskModal) {
-  taskModal.addEventListener("click", e => {
-    if (e.target.id === "taskModal") closeModal();
-  });
-}
-
 function closeModal() {
-  document.getElementById("taskModal").classList.add("hidden");
-  document.getElementById("taskForm").reset();
+  const taskModal = document.getElementById("taskModal");
+  if (taskModal) taskModal.classList.add("hidden");
+  const taskForm = document.getElementById("taskForm");
+  if (taskForm) taskForm.reset();
 }
-
-document.getElementById("taskForm").addEventListener("submit", e => {
-  e.preventDefault();
-  createTask();
-});
 
 function createTask() {
   const title = document.getElementById("taskTitle").value;
@@ -968,8 +1228,6 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 3500);
 }
 
-
-
 function playNotificationSound() {
   try {
     const context = new (window.AudioContext || window.webkitAudioContext)();
@@ -993,21 +1251,6 @@ function playNotificationSound() {
   }
 }
 
-/* ---------------- FILTER LISTENER WIRING ---------------- */
-
-["filterDept", "filterStatus", "filterPriority"].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) {
-    el.addEventListener("change", () => {
-      if (currentViewMode === "list") {
-        renderFullTable();
-      } else {
-        renderKanbanBoard();
-      }
-    });
-  }
-});
-
 /* ---------------- RENDER ALL CORE ---------------- */
 
 function renderAll() {
@@ -1021,11 +1264,5 @@ function renderAll() {
   renderDepartments();
 }
 
-// Populate and run
-populateDeptSelects();
+// Ensure database administration configuration
 ensureAdminExists();
-
-setTimeout(() => {
-  renderActivityStream();
-  renderNotifications();
-}, 200);
