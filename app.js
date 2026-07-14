@@ -87,10 +87,28 @@ function login() {
   showToast("Signing in...");
   const email = `${usernameInput}@dbr-inside-system.local`;
 
-  // Set persistence to SESSION (only valid for current tab)
-  auth.setPersistence(firebase.auth.Auth.Persistence.SESSION)
+  // Fallback sign-in helper
+  const performSignIn = () => {
+    return auth.signInWithEmailAndPassword(email, passwordInput);
+  };
+
+  // Attempt to set persistence to SESSION, but proceed even if blocked (e.g. file:/// or security settings)
+  const setPersistencePromise = () => {
+    try {
+      return auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
+    } catch (e) {
+      console.warn("setPersistence threw synchronous error, falling back:", e);
+      return Promise.resolve();
+    }
+  };
+
+  setPersistencePromise()
+    .catch(err => {
+      console.warn("setPersistence rejected, falling back:", err);
+      return Promise.resolve();
+    })
     .then(() => {
-      return auth.signInWithEmailAndPassword(email, passwordInput);
+      return performSignIn();
     })
     .then(userCredential => {
       const uid = userCredential.user.uid;
@@ -121,7 +139,7 @@ function login() {
         email: userData.email || email,
         role: userData.role, // "admin" | "head" | "staff"
         department: userData.department,
-        name: userData.username.replace(/[.]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+        name: (userData.username || "User").replace(/[.]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
       };
 
       // App Shell is mounted dynamically via auth state change.
@@ -144,6 +162,13 @@ function login() {
 let tasksListener = null;
 let usersListener = null;
 
+// Safe Date Conversion helper to prevent crashes on bad data
+const toDateSafe = (ts) => {
+  if (!ts) return new Date();
+  if (typeof ts.toDate === 'function') return ts.toDate();
+  return new Date(ts);
+};
+
 function startFirestoreListeners() {
   if (tasksListener) tasksListener();
   if (usersListener) usersListener();
@@ -163,18 +188,18 @@ function startFirestoreListeners() {
         assignedDepartment: data.assignedDepartment,
         priority: data.priority,
         status: data.status,
-        dueDate: data.dueDate ? data.dueDate.toDate() : new Date(),
+        dueDate: toDateSafe(data.dueDate),
         roomNumber: data.roomNumber || "N/A",
         guestRelated: !!data.guestRelated,
-        createdAt: data.createdAt ? data.createdAt.toDate() : new Date(),
+        createdAt: toDateSafe(data.createdAt),
         comments: (data.comments || []).map(c => ({
-          author: c.author,
-          text: c.text,
-          time: c.time ? c.time.toDate() : new Date()
+          author: c.author || "Staff",
+          text: c.text || "",
+          time: toDateSafe(c.time)
         })),
         logs: (data.logs || []).map(l => ({
-          text: l.text,
-          time: l.time ? l.time.toDate() : new Date()
+          text: l.text || "",
+          time: toDateSafe(l.time)
         }))
       };
       allTasks.push(task);
@@ -249,17 +274,26 @@ auth.onAuthStateChanged(user => {
             email: userData.email || user.email,
             role: userData.role,
             department: userData.department,
-            name: userData.username.replace(/[.]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+            name: (userData.username || "User").replace(/[.]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
           };
 
           // Secure DOM instantiation: clone appShellTemplate into appContainer
           const appContainer = document.getElementById("appContainer");
           const template = document.getElementById("appShellTemplate");
+          
+          if (!appContainer || !template) {
+            console.error("appContainer or appShellTemplate not found in DOM");
+            showToast("System layout template error.");
+            return;
+          }
+
           appContainer.innerHTML = "";
           appContainer.appendChild(template.content.cloneNode(true));
 
           // Hide login screen and display app shell
-          document.getElementById("loginScreen").classList.add("hidden");
+          const loginScreen = document.getElementById("loginScreen");
+          if (loginScreen) loginScreen.classList.add("hidden");
+          
           const appShell = document.getElementById("appShell");
           if (appShell) appShell.classList.remove("hidden");
 
