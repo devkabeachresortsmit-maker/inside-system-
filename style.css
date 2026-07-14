@@ -278,7 +278,7 @@ select {
 .login-banner {
   width: 55%;
   position: relative;
-  background-image: url('resort_banner.png');
+  background-image: url('resort_banner.jpg');
   background-size: cover;
   background-position: center;
   display: flex;
