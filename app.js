@@ -92,21 +92,47 @@ function login() {
     return auth.signInWithEmailAndPassword(email, passwordInput);
   };
 
-  // Attempt to set persistence to SESSION, but proceed even if blocked (e.g. file:/// or security settings)
+  // Attempt to set persistence to SESSION, but proceed even if it hangs or throws (e.g. file:/// or private window)
   const setPersistencePromise = () => {
-    try {
-      return auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
-    } catch (e) {
-      console.warn("setPersistence threw synchronous error, falling back:", e);
-      return Promise.resolve();
-    }
+    return new Promise(resolve => {
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          console.warn("setPersistence timed out after 500ms, proceeding directly to sign in");
+          resolve();
+        }
+      }, 500);
+
+      try {
+        auth.setPersistence(firebase.auth.Auth.Persistence.SESSION)
+          .then(() => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              resolve();
+            }
+          })
+          .catch(err => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              console.warn("setPersistence rejected, proceeding:", err);
+              resolve();
+            }
+          });
+      } catch (e) {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          console.warn("setPersistence threw error, proceeding:", e);
+          resolve();
+        }
+      }
+    });
   };
 
   setPersistencePromise()
-    .catch(err => {
-      console.warn("setPersistence rejected, falling back:", err);
-      return Promise.resolve();
-    })
     .then(() => {
       return performSignIn();
     })
