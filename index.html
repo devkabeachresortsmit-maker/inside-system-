@@ -19,29 +19,54 @@
 
   <!-- ============ LOGIN SCREEN ============ -->
   <section id="loginScreen" class="login-screen">
-    <div class="login-card glass-panel">
-      <div class="login-logo-container">
-        <img src="logo.svg" alt="Devka Beach Resort Logo" class="login-logo">
+    <div class="login-wrapper glass-panel">
+      <!-- Left Panel: Resort Branding Banner -->
+      <div class="login-banner">
+        <div class="login-banner-overlay"></div>
+        <div class="login-banner-content">
+          <img src="logo.svg" alt="Devka Beach Resort Logo" class="banner-logo">
+          <span class="banner-eyebrow">Devka Beach Resort</span>
+          <h1 class="banner-title">Ops Hub</h1>
+          <p class="banner-subtitle">Real-time collaboration and performance tracking for world-class hospitality operations.</p>
+        </div>
       </div>
-      <h1 class="brand-title" style="margin-top: 10px;">Ops Hub</h1>
-      <p class="login-sub">Sign in to manage resort operations in real time.</p>
+      <!-- Right Panel: Login Form Container -->
+      <div class="login-form-container">
+        <h2 class="form-title">Welcome Back</h2>
+        <p class="form-subtitle">Sign in to access your operations dashboard.</p>
+        
+        <form id="loginForm">
+          <div class="input-group">
+            <label class="field-label" for="loginUsername">Username</label>
+            <div class="input-wrapper">
+              <i data-lucide="user" class="input-icon"></i>
+              <input type="text" id="loginUsername" placeholder="Enter username" required autocomplete="username">
+            </div>
+          </div>
 
-      <form id="loginForm">
-        <label class="field-label" for="loginUsername">Username</label>
-        <input type="text" id="loginUsername" placeholder="Enter username" required>
+          <div class="input-group">
+            <label class="field-label" for="loginPassword">Password</label>
+            <div class="input-wrapper">
+              <i data-lucide="lock" class="input-icon"></i>
+              <input type="password" id="loginPassword" placeholder="••••••••" required autocomplete="current-password">
+              <button type="button" id="togglePasswordBtn" class="btn-toggle-password" tabindex="-1">
+                <i data-lucide="eye" class="toggle-password-icon"></i>
+              </button>
+            </div>
+          </div>
 
-        <label class="field-label" for="loginPassword">Password</label>
-        <input type="password" id="loginPassword" placeholder="••••••••" required>
-
-        <button type="submit" class="btn btn-gold btn-block">
-          <i data-lucide="log-in"></i> Sign In
-        </button>
-      </form>
+          <button type="submit" class="btn btn-gold btn-block">
+            <i data-lucide="log-in"></i> Sign In
+          </button>
+        </form>
+        <p class="login-footer">© 2026 Devka Beach Resort. All rights reserved.</p>
+      </div>
     </div>
   </section>
 
-  <!-- ============ APP SHELL ============ -->
-  <div id="appShell" class="app-shell hidden">
+  <!-- ============ APP SHELL TEMPLATE ============ -->
+  <template id="appShellTemplate">
+    <div id="appShell" class="app-shell hidden">
 
     <aside class="sidebar">
       <div class="sidebar-brand">
@@ -334,6 +359,30 @@
       </section>
 
     </main>
+
+    <!-- Mobile Floating Bottom Navigation Bar -->
+    <nav class="mobile-bottom-nav">
+      <button class="nav-item active" data-view="dashboard">
+        <i data-lucide="layout-dashboard"></i>
+        <span>Dashboard</span>
+      </button>
+      <button class="nav-item" data-view="tasks">
+        <i data-lucide="check-square"></i>
+        <span>Tasks</span>
+      </button>
+      <button class="nav-item" data-view="departments">
+        <i data-lucide="layers"></i>
+        <span>Depts</span>
+      </button>
+      <button class="nav-item admin-only hidden" data-view="users" id="mobileNavUsersBtn">
+        <i data-lucide="users"></i>
+        <span>Users</span>
+      </button>
+      <button class="mobile-nav-item-btn" id="mobileNewTaskBtn">
+        <i data-lucide="plus-circle" style="color:var(--gold); stroke-width: 2.5px;"></i>
+        <span>New Task</span>
+      </button>
+    </nav>
   </div>
 
   <!-- ============ NEW TASK MODAL ============ -->
@@ -446,6 +495,10 @@
       </div>
     </div>
   </aside>
+  </template>
+
+  <!-- Container for the authenticated App Shell -->
+  <div id="appContainer"></div>
 
 
   <div id="toast" class="toast hidden"></div>
@@ -454,6 +507,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
   <script src="firebase-config.js"></script>
   <script src="app.js"></script>
 </body>
